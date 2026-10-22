@@ -26,6 +26,6 @@ codex mcp add tapnow --url https://mcp.tapnow.ai/api/agent-gateway/mcp/general/m
 
 生成工具可能立即消耗 Tapies，须在当前用户授权的数量、模型和预算范围内调用。返回任务标识不代表生成完成；保留项目和节点标识查询结果，避免通过不同入口重复提交。
 
-本仓库仅包含通用技能、参考文档和无生成的节点搜索辅助脚本，不包含账户凭据、MCP 本机配置或用户素材。
+本仓库仅包含通用技能、参考文档和节点搜索、画布缩放和结果下载辅助脚本，不包含账户凭据、MCP 本机配置或用户素材。
 
 官方资料：[TapNow 接入文档](https://docs.tapnow.ai/zh/docs/mcp/add-a-custom-connector)、[TapNow MCP 能力](https://docs.tapnow.ai/zh/docs/mcp/use-tapnow-in-other-agents)、[Codex MCP 配置](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
