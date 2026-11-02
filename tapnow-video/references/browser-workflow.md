@@ -5,13 +5,46 @@
 ## 操作路线
 
 1. 按 [技能入口](../SKILL.md#入口与资料) 选择浏览器，定位原画布与目标节点。未登录时等待用户登录成功后复用。
-2. 本地素材通过当前可见的 Add → Upload 入口上传：先监听工具支持的 file chooser，再点击上传项并传绝对路径；多选前确认能力。核对文件名、缩略图和上传完成状态，超时先查成果，不立即重传。
+2. 本地素材通过当前可见的 Add → Upload 入口上传，按[分阶段执行](#本地上传的分阶段执行)调用辅助函数；先监听 file chooser，再点击上传项并设置绝对路径。文件已交给网页不等于上传完成，超时先核查原节点，不立即重传。
 3. 选中素材，通过 Add to Chat 或 Agent 附件／节点引用绑定输入；明确首帧、尾帧及其他参考用途，不能只写浏览器无法读取的本地路径。
 4. Agent 建任务前确认 Ask／手动确认模式。Ask、发送箭头和 Confirm 含义不同，按真实控件辨认；Agent 的语言模型选择器也不同于媒体生成型号选择器。
 5. 按下节配置节点；Agent 确认卡缺少指定型号时检查完整画布菜单。发送键按当前界面核对，不能凭习惯混用 Enter 与 Ctrl+Enter；发送后确认消息进入对话。
 6. 按 [批量确认与费用](#批量确认与费用) 核对并执行已授权的单次提交，再按 [生成、查询与网页验收](#生成查询与网页验收) 查询和播放结果，最后按 [原片下载与对比](#原片下载与对比) 交付。
 
 官方操作资料：[上传](https://docs.tapnow.ai/zh/docs/canvas/upload-files-to-the-canvas)、[Agent 对话](https://docs.tapnow.ai/zh/docs/agent/chat-with-agent)、[生成确认模式](https://docs.tapnow.ai/zh/docs/agent/choose-a-generation-mode)。
+
+## 本地上传的分阶段执行
+
+先读当前浏览器的 `file-uploads` 文档，确认文件存在、格式和大小符合当前入口要求，再从真实 DOM 定位已展开菜单中的唯一可见上传项。使用 [`upload-files.js`](../scripts/upload-files.js) 的 `uploadTapnowFiles(tab, options)`；把函数声明加载到已有 `cua_repl`，复用原标签页。不另起浏览器驱动，不在 `evaluate` 中点击或派发文件事件。
+
+辅助函数只上传一次，不打开 Add 菜单、不绑定下游输入、不提交生成。调用方传入从当前页面确认的 `uploadControl` locator 和 `files` 绝对路径数组；多文件会核对 `isMultiple()`，不支持时停止，不擅自拆批。
+
+- **`chooser`**：先注册监听，再单次点击。监听一创建就捕获拒绝，点击失败也收尾监听，防止晚到错误导致工具内核重置。选择器默认等待 30 秒，点击回执等待 5 秒；点击仅回执超时时，同一次监听确实返回选择器才继续，报告 `uncertain` 并沿用该选择器，不再次点击。明确点击报错或未取得选择器则停止，核查菜单、遮挡和原生窗口，不直接延长到数分钟。
+- **`set-files`**：单次 `setFiles()`，默认等待回执 15 秒。回执超时不能证明文件未送达；有 `verifyUpload` 时进入原页面核验并报告 `uncertain`，不重新设置文件。明确报错则停止，保留原错误消息。
+- **`verify`**：由调用方的 `verifyUpload({tab, files, timeoutMs})` 按实际页面等待本次原节点就绪，核对文件身份、数量、缩略图、上传状态及可读／可播放的媒体。只读核验，不上传、刷新或生成。返回 `{complete: true, evidence: "简短页面证据"}` 才能判定完成；仍在上传、部分成功或证据不足时不能返回 true。默认核验 45 秒；优先控件状态等待，不固定 sleep，也不把长等待直接串接为一次超过 60 秒的阻塞调用，需要时使用工具的运行中续接机制并继续反馈。
+
+通过 `onProgress` 输出 `{stage, state, fileCount}`；state 为 `started`、`completed`、`uncertain` 或 `failed`。反馈函数保持简短，例如 `event => nodeRepl.write(event)`；不要在反馈中执行页面动作或长等待。反馈异常不会中断上传。
+
+```js
+// observedUploadControl 和 verifyCurrentUpload 须先按当前 DOM、节点身份定义。
+const upload = await uploadTapnowFiles(tab, {
+  files: absolutePaths,
+  uploadControl: observedUploadControl,
+  onProgress: event => nodeRepl.write(event),
+  verifyUpload: verifyCurrentUpload,
+});
+nodeRepl.write(upload);
+```
+
+读取返回状态后再决定后续：
+
+- `ok: true, status: "uploaded"`：网页核验完成，`evidence` 给出依据；`chooserClickTimedOut: true` 表示点击回执超时后已由同次选择器确认入口生效；`deliveryTimedOut: true` 表示曾出现文件交接回执超时，但原页面已证实成功。
+- `ok: true, status: "files-set"`：未提供核验函数，只证明 `setFiles()` 已返回，不能报告上传完成或直接提交生成；继续核查原节点。
+- `ok: false, status: "stopped"`：查看 `stage`、`message`、`filesMayBeSet` 和 `nextAction`。这是流程停止，不代表服务端上传必定失败。`set-files` 开始后，文件可能已送达；先查原节点和传输，保留成功项，只在明确失败后按授权补缺项。超时只停止等待，不取消底层浏览器动作；晚到回执和拒绝仍被捕获。同一标签页不并行开始另一轮上传。
+
+各阶段超时参数为 `chooserTimeoutMs`、`setFilesTimeoutMs`、`completionTimeoutMs`，单项范围 1–60000ms；仅在有页面证据时调整。超时限制等待判定，底层工具的阻塞、审批或链路延迟仍可能推迟实际返回，不能承诺每次调用的总耗时。需要独立恢复时只运行原 `verifyUpload`，不要重放上传函数。浏览器连接或明确权限错误按当前工具文档处理，不在成功上传时重复排查设置。
+
+维护脚本时可用 `node scripts/test-upload.cjs` 运行无网络回归测试；浏览器闭环应在隔离本地页面或已授权的测试画布验证。模拟用例不证明 TapNow 服务端网络质量。
 
 ## 图片与视频节点的 DOM 配置
 
@@ -52,7 +85,7 @@
 3. 达到目标后再观察一次并读回；用小容差处理浮点误差。无变化、误差不再减小、目标不可达或达到有界尝试次数时停止，核对焦点、步进及自动视图变化，不静默改目标或盲按固定次数。
 4. 核对浮动控件是否仍可见；需要时交叉读取 `.react-flow__viewport` 的实际变换比例。同一缩放比允许平移位置不同，不能据此保证历史坐标仍有效。
 
-重复定值可复用 [`set-canvas-zoom.js`](../scripts/set-canvas-zoom.js) 的 `setTapnowCanvasZoom(tab, target)`。它需要 `playwright` 和 `getAXState`；用文件工具读取脚本，将函数声明直接装入已有 `cua_repl`，复用原标签页。助手每步读回，最多 80 轮，以 `1e-4` 缩放比为比较容差；只操作滑杆，不选择节点或提交任务。
+控件已完整可见且可操作时无需调整缩放。需要指定缩放值时可复用 [`set-canvas-zoom.js`](../scripts/set-canvas-zoom.js) 的 `setTapnowCanvasZoom(tab, target)`。它需要 `playwright`；用文件工具读取脚本，将函数声明直接装入已有 `cua_repl`，复用原标签页。每次用一次 DOM 读取同时确认滑杆唯一性、范围和当前值，按键后等待值变化并读回；已达到目标时立即返回。最多 80 轮，以 `1e-4` 缩放比为比较容差；只操作滑杆，不选择节点或提交任务。维护时运行 `node scripts/test-zoom.cjs`。
 
 ```js
 nodeRepl.write(await setTapnowCanvasZoom(tab, 1)); // 恢复到 100%
@@ -75,8 +108,10 @@ nodeRepl.write(await setTapnowCanvasZoom(tab, 1)); // 恢复到 100%
 ## 分组执行与节点搜索
 
 - 将已确认动作和组末核验放在同一次调用；菜单、参数及任务状态用 AX／DOM，缩略图、连线、遮挡与成片用图像。结构变化、用户介入或目标不唯一时返回新状态，不猜下一步。
+- 同一次脚本中的多个浏览器 API 仍各自有往返开销。型号、模式、参数和输入槽位等只读字段，能通过一次限定作用域的 DOM 读取获得时合并返回；不要逐字段 `getAttribute` 后再完整截图核对同一组值。交互仍使用正式控件 API，不用 DOM 注入代替点击或提交。
 - 优先工具自带等待及菜单展开、参数更新、传输完成等状态等待，不统一添加固定 sleep。生成排队时查任务状态，避免高频截图。
 - 正常路径只返回必要字段、有界文本和必要图像；支持时可在工具内读取 `getAXState({emit: false})` 后输出摘要。仍须执行工具要求的状态检查；截图后需要元素编号时重新观察，不沿用旧编号。
+- 上传回执超时后只恢复原节点核验，不重跑上传前置检查或整个配置流程。缩短超时只会缩短观察，不会取消底层调用；出现固定长延迟时先按下节定位，不反复加长等待或更换上传入口。
 - 重复搜索可复用 [`search-nodes.js`](../scripts/search-nodes.js) 的 `searchTapnowNodes(tab, {kind, query})`。首次核对 Node search 的 dialog、textbox 及类型筛选的真实名称；筛选可能是 button，读取 `aria-pressed` 验证，不假定 Enter 能选筛选项。
 - 脚本需要 `playwright`、`paste` 和 `getAXState`；用文件工具读取并将声明装入已有 `cua_repl`，不另起浏览器驱动。受控输入残留时先核对值，可聚焦后全选、粘贴，空值用 Backspace；粘贴会改变剪贴板，不读取无关内容。函数只搜索、返回有限结果，不选择或提交；失败后停止并观察。
 
@@ -94,6 +129,13 @@ nodeRepl.write(await searchTapnowNodes(tab, { kind: "Image", query }));
 4. 目标文字须唯一匹配并对应一个有效 bbox；只消除空白等无歧义差异，保留 Mini／Fast 等后缀。用 JSON 解析框，检查有限值、范围、顺序和面积；缺失、重复、截断或多区域不明时停止。
 5. 对声明为 0–1000 的 `[l,t,r,b]`，中心为 `x = cropX + (l+r)/2000*cropWidth`、`y = cropY + (t+b)/2000*cropHeight`；裁切范围必须先换算到输入工具坐标。目标完全可见时单次点击，再由新 DOM 或截图核对实际值；未命中先观察，不连续补点。盲测时 DOM 只用于事后核验，不能补点后声称 OCR 成功。
 6. 测试结束按“型号 → 参数与音频 → 数量及输入角色”恢复并读回最终值。无生成测试始终停在提交前；异常只从最后已核验状态恢复，不重放已执行动作。
+
+## 固定长延迟的定位
+
+- 区分模型响应、浏览器调用、文件传输与生成排队。只在异常时对已有必要操作计时；小范围只读操作与整页读取都耗时接近时，先查共同调用链路，不把全部时间归因于 TapNow 上传或画布大小。
+- 在独立测试页对照本地页面与目标站点，保持业务画布、登录及原任务不变。两种浏览器都慢时继续检查共同运行时；历史正常结果不能代替当前验证。
+- 浏览器工具的站点检查等请求可能由独立辅助进程发出。终端或主应用代理可用，不证明该进程已继承代理；结合实际连接、请求耗时和启动配置判断。已有连接超时不是账号限流证据。不得关闭站点检查、伪造允许结果或改用未授权接口规避检查。
+- 网络或运行时修复先做隔离对照，再验证新启动的工具进程。改启动环境不等于旧进程已更新；不为测试重启、终止其他聊天或浏览器。需要新聊天或扩大配置修改范围时取得对应授权，未验证部分明确保留。
 
 ## 上下文与交接
 

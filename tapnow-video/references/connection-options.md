@@ -35,7 +35,7 @@
 | 状态、项目及素材查询 | `tapnow_status`、`list_visual_projects`、`find_library_assets`、`find_library_folders` | 只读；项目列表不等于画布全部内容 |
 | 素材选择 | `show_library` | 需 Codex 支持 MCP Apps；面板不可用时用素材查询 |
 | 上传 | `upload_image` | 写入平台；核对支持的输入来源，不为上传方便公开本地素材 |
-| 图片、视频、电商组图、配图 | `create_hero_image`、`create_hero_video`、`create_product_shots`、`create_deck_visuals` | 可能直接付费提交；核对型号、参数及输出数量 |
+| 图片、视频、电商组图、配图 | `create_image`、`create_video`、`create_product_shots`、`create_deck_visuals` | 可能直接付费提交；核对型号、参数及输出数量 |
 | 尺寸转换、存库 | `resize_for_platform`、`resize_for_platform_apply`、`save_to_library` | 会写入平台，即使不收费也须在任务范围内 |
 | 结果查询 | `get_production_result` | 沿用提交返回的 `project_id` 和 `node_ids`，不启动生成 |
 
