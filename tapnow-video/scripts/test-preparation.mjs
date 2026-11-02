@@ -74,7 +74,8 @@ test('viewport and canvas zoom changes invalidate learned keyboard steps',async(
   state.viewport.width=1600;await c.readCanvas();
   assert.deepEqual(c.keyboardSteps,{});assert.equal(c.dragGain,null);
   c.keyboardSteps={shift:20};state.viewport.scale=1;await c.readCanvas();
-  assert.deepEqual(c.keyboardSteps,{});
+  c.dragGain=.8;state.viewport.scale=.75;await c.readCanvas();
+  assert.deepEqual(c.keyboardSteps,{});assert.equal(c.dragGain,null);
 });
 test('keyboard movement batches readback, preserves outsiders and restores snapping',async(t)=>{
   let now=0;t.mock.method(Date,'now',()=>now);

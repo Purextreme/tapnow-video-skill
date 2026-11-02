@@ -19,7 +19,7 @@ description: Operate TapNow image, video, canvas and asset workflows from Codex 
 | [02 素材与节点定位](references/cards/02-assets-navigation.md) | 精确搜索、复用、上传、遮挡命中检查 | browser-actions.mjs、upload-files.js |
 | [03 图片／视频与模型对比](references/cards/03-video-preparation.md) | 首尾帧、参考图与真实 @ 素材、图片、型号对比 | browser-actions.mjs |
 | [04 视频延长与放大](references/cards/04-video-extension.md) | 前补／后续、时长、视频放大草稿 | browser-actions.mjs、match-control.py |
-| [05 画布排布管理](references/cards/05-canvas-management.md) | 排列、空位、移动、分组／堆叠与新画布策略 | canvas-geometry.mjs、browser-actions.mjs |
+| [05 画布排布管理](references/cards/05-canvas-management.md) | 按流程排布、移动续跑、分组／堆叠与新画布策略 | canvas-layout.mjs、canvas-geometry.mjs、browser-actions.mjs |
 
 共用的加载方式、窗口变化、像素匹配与网络恢复见 [脚本运行约定](references/script-runtime.md)。每次完整准备都返回连续墙钟计时；不得把动作耗时相加冒充总耗时。20 秒是验收目标，失败、冷启动、上传与恢复耗时也须如实区分。
 

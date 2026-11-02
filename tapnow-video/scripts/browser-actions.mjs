@@ -70,9 +70,10 @@ export class TapnowPreparation {
       const nodes = [...document.querySelectorAll('.react-flow__node[data-id]')].map(e => {
         const p = e.style.transform.match(/translate\(([-.\d]+)px,\s*([-.\d]+)px\)/);
         const r = e.getBoundingClientRect();
-        const primaryMedia=[...e.querySelectorAll('img,video')].filter(m=>
-          !['referenceImage','firstFrame','lastFrame'].includes(m.getAttribute('alt')) &&
-          !m.closest('[data-testid="canvas-node-prompt-textarea"]'));
+        // Own media has public content markers. Selected editors also contain
+        // model/lens icons and source chips; those are not node identity.
+        const primaryMedia=[...e.querySelectorAll('[data-testid="canvas-node-image-content"],[data-testid="video-poster"],video')]
+          .filter(m=>!m.closest('[data-testid="canvas-node-prompt-textarea"]'));
         return {id:e.getAttribute('data-id'), title:e.querySelector('input[data-testid="canvas-node-title"]')?.value ||
           e.querySelector('.canvas-node-title > span.truncate')?.textContent?.trim() ||
           e.querySelector('.canvas-node-title span.whitespace-pre')?.textContent?.trim() || '',
@@ -86,10 +87,10 @@ export class TapnowPreparation {
       return {nodes,edges:[...document.querySelectorAll('.react-flow__edge')].map(e=>({id:e.getAttribute('data-id'),label:e.getAttribute('aria-label')})),
         viewport:tr ? {x:+tr[1],y:+tr[2],scale:+tr[3],width:innerWidth,height:innerHeight}:null};
     });
-    const signature=state.viewport && state.viewport.width+'x'+state.viewport.height;
+    const signature=state.viewport && state.viewport.width+'x'+state.viewport.height+'@'+state.viewport.scale;
     if (this.viewportSignature && this.viewportSignature!==signature) this.dragGain=null;
     this.viewportSignature=signature;
-    const keySignature=signature+'@'+state.viewport?.scale;
+    const keySignature=signature;
     if(this.keySignature!==keySignature)this.keyboardSteps={};
     this.keySignature=keySignature;
     return state;
@@ -645,7 +646,51 @@ export class TapnowPreparation {
       throw Error('Move needs too many key steps; choose a nearer workspace or a new canvas');
     } finally {if(restoreSnap)await this.activate(snap);}
   }
-  // Explicit fallback after current UI verification; not automatically replayed on failure.
+  async panTo(x,y) {
+    if (![x,y].every(Number.isFinite)) throw Error('Invalid viewport target');
+    const original=await this.readCanvas();
+    let current=original,gain=1;
+    for(let attempt=0;attempt<6;attempt++) {
+      const v=current.viewport;
+      if(!v || !(v.scale>0))throw Error('Canvas viewport unavailable');
+      const dx=x-v.x,dy=y-v.y;
+      if(Math.abs(dx)<12 && Math.abs(dy)<12)return current;
+      const mini=this.tab.playwright.locator('svg.react-flow__minimap-svg');
+      await this.unique(mini,'canvas minimap');
+      const path=await mini.evaluate((e,{v,dx,dy,gain})=>{
+        const r=e.getBoundingClientRect(),box=e.getAttribute('viewBox')?.trim().split(/\s+/).map(Number);
+        if(!box || box.length!==4 || !box.every(Number.isFinite) || !(box[2]>0 && box[3]>0))return null;
+        const s=Math.min(r.width/box[2],r.height/box[3]);
+        const from=[r.x+(r.width-box[2]*s)/2+((v.width/2-v.x)/v.scale-box[0])*s,
+          r.y+(r.height-box[3]*s)/2+((v.height/2-v.y)/v.scale-box[1])*s];
+        const to=[from[0]-dx/v.scale*s/gain,from[1]-dy/v.scale*s/gain];
+        const inside=p=>p[0]>r.x+3 && p[0]<r.right-3 && p[1]>r.y+3 && p[1]<r.bottom-3;
+        if(!inside(from) || !inside(to))return null;
+        // The input layer can be a sibling of the SVG. Accept only a wrapper
+        // with the same observed bounds, never an arbitrary page ancestor.
+        const hit=document.elementFromPoint(...from);
+        for(let p=e;p;p=p.parentElement) {
+          const a=p.getBoundingClientRect();
+          if(['x','y','width','height'].some(k=>Math.abs(a[k]-r[k])>4))break;
+          if(hit && p.contains(hit))return {from,to};
+        }
+        return null;
+      },{v,dx,dy,gain});
+      if(!path)throw Error('Minimap target offscreen or occluded; inspect navigation surface');
+      await this.native.getScreenshot({emit:false});
+      await this.native.drag(path.from,path.to);
+      current=await this.readCanvas();
+      const audit=this.geometry.compareCanvas(original,current,[]);
+      if(!audit.ok)throw Error('Pan changed nodes: '+JSON.stringify(audit));
+      const next=current.viewport;
+      if(!next || ['width','height','scale'].some(k=>next[k]!==v[k]))throw Error('Viewport changed during pan; replan');
+      gain=((next.x-v.x)*dx+(next.y-v.y)*dy)/(dx*dx+dy*dy)*gain;
+      if(gain<.3 || gain>1.4)throw Error('Canvas pan not observed; inspect before retrying');
+    }
+    throw Error('Canvas pan did not settle');
+  }
+  // Long moves use a verified card edge; short corrections use moveSelected.
+  // Read the actual position after any failure rather than replaying the delta.
   async dragSelected(ids, plan) {
     let canvas=await this.readCanvas(); const selected=canvas.nodes.filter(n=>n.selected).map(n=>n.id).sort();
     if (JSON.stringify(selected)!==JSON.stringify([...ids].sort())) throw Error('Select exact nodes before moving');
@@ -671,13 +716,20 @@ export class TapnowPreparation {
           return null;
         });
         if (!point || !canvas.viewport) throw Error('No unoccluded drag handle');
-        const gain=this.dragGain || 1;
-        const target=[point[0]+dx*canvas.viewport.scale/gain,point[1]+dy*canvas.viewport.scale/gain];
-        if (target[0]<75 || target[0]>canvas.viewport.width-30 || target[1]<75 || target[1]>canvas.viewport.height-70)
+        const inside=p=>p[0]>=75 && p[0]<=canvas.viewport.width-30 && p[1]>=75 && p[1]<=canvas.viewport.height-70;
+        let gain=this.dragGain || 1;
+        const project=()=>[point[0]+dx*canvas.viewport.scale/gain,point[1]+dy*canvas.viewport.scale/gain];
+        let target=project();
+        // Measured gain near an edge can overcompensate. Reset it once before
+        // sending input; this is not a retry of a failed drag.
+        if(!inside(target) && gain!==1) {gain=1;this.dragGain=null;target=project();}
+        if (!inside(point) || !inside(target))
           throw Error('Planned zone is outside viewport; pan/zoom or choose a fresh canvas before dragging');
+        await this.native.getScreenshot({emit:false});
         await this.native.drag(point,target);
         const next=await this.readCanvas(), actual=next.nodes.find(n=>n.id===ids[0]);
-        if (!actual?.selected) throw Error('Drag lost node selection');
+        if (JSON.stringify(next.nodes.filter(n=>n.selected).map(n=>n.id).sort())!==JSON.stringify(selected)) throw Error('Drag lost node selection');
+        if(!next.viewport || ['width','height','scale'].some(k=>next.viewport[k]!==canvas.viewport[k]))throw Error('Viewport changed during drag; inspect current position');
         const observedGain=((actual.x-current.x)*dx+(actual.y-current.y)*dy)/(dx*dx+dy*dy)*gain;
         if (observedGain<.4 || observedGain>1.3) throw Error('Drag did not move the expected node');
         this.dragGain=observedGain; canvas=next;

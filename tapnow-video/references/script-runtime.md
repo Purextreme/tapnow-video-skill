@@ -23,7 +23,7 @@ const result = await runPreparedFlow({controller,request,startMs,mcpMs});
 
 ## 全屏、窗口缩放与动画
 
-- 每次操作读取新的窗口尺寸、DOM rect、画布 transform 和实际命中对象；没有保存屏幕绝对点击坐标。窗口大小变化清除会话拖动校准，重新计算空区、ROI 与点击点。
+- 每次操作读取新的窗口尺寸、DOM rect、画布 transform 和实际命中对象；没有保存屏幕绝对点击坐标。窗口或画布缩放变化清除会话拖动校准，重新计算空区、ROI 与点击点。
 - 图片素材节点的世界坐标随画布缩放保持不变；屏幕坐标每次通过当前 transform 换算。画布标题／聊天栏也按语义控件定位，不依赖左上角／右上角固定像素。
 - 搜索、新建节点、菜单弹出都有动画。等待目标 bbox 连续稳定和实际命中条件，不用“固定睡眠 5 秒”；未稳定就明确失败，不继续连点。
 - 画布缩放有独立滑块，视频播放也可能出现 slider。出现歧义先读取当前 DOM 并按实际归属限定控件，不能把播放进度当画布缩放。
@@ -55,7 +55,9 @@ const result = await runPreparedFlow({controller,request,startMs,mcpMs});
 
 ## 验证
 
-Node：`node --test scripts/test-preparation.mjs scripts/test-workflow-policy.mjs`；缩放、上传脚本被修改时再运行对应 `test-zoom.cjs`、`test-upload.cjs`。
+Node：`node --test scripts/test-preparation.mjs scripts/test-workflow-policy.mjs scripts/test-canvas-layout.mjs`；缩放、上传脚本被修改时再运行对应 `test-zoom.cjs`、`test-upload.cjs`。
 Python：项目 venv 执行 `scripts/test-matching.py`。纯几何／匹配测试不能代替真实画布：至少验证完整准备、所需模式、窗口变化、外部碰撞、失败停住及不生成。
 
 用户要求计时时，报告成功率、样本数、完整墙钟和浏览器阶段，保留失败与版本；不把首次学习、冷页面加载、上传或网络恢复混成已缓存素材的准备速度，也不隐去它们。正常运行除返回计时外不额外写报告；本机媒体、路径、项目事实和测试结果留在任务记录，通用规则才进入 Skill。
+
+画布批处理在导航前捕获 `startMs=Date.now()` 并传给 `createLayoutRunner`；返回的 `fullWallMs` 使用同一个起始时间，续跑也包含中断间隔。逐节点耗时仅用于定位瓶颈，不能相加冒充完整墙钟。检查点由调用方在任务目录按需保存，脚本不自动写盘。
