@@ -1,9 +1,12 @@
-// Load this declaration in the existing cua_repl after discovering the upload control.
+// Import this module in the existing cua_repl after discovering the upload control.
 // This helper uploads once. A timeout stops observation; it does not cancel the browser action.
+import { recordTapnowEvent } from './diagnostics.mjs';
+
 async function uploadTapnowFiles(tab, {
   files, uploadControl, verifyUpload, onProgress,
   chooserTimeoutMs = 30000, setFilesTimeoutMs = 15000, completionTimeoutMs = 45000,
 } = {}) {
+  const startedAt = Date.now();
   let stage = "preflight";
   let filesMayBeSet = false;
   let deliveryTimedOut = false;
@@ -14,6 +17,10 @@ async function uploadTapnowFiles(tab, {
   };
   const fail = async message => {
     await report("failed");
+    await recordTapnowEvent({ operation: "upload", route: "chooser", stage,
+      outcome: filesMayBeSet ? "uncertain" : "failed",
+      reason: /timed out|deadline/i.test(message) ? "timeout" : "unverified",
+      elapsedMs: Date.now() - startedAt, mutationMayBeInFlight: filesMayBeSet });
     return {
       ok: false, status: "stopped", stage, filesMayBeSet, message,
       nextAction: filesMayBeSet
@@ -65,7 +72,11 @@ async function uploadTapnowFiles(tab, {
     }
     // The matching chooser proves the click took effect, even if its acknowledgment was late.
     chooserClickTimedOut = Boolean(clicked.timedOut);
-    if (chooserClickTimedOut) await report("uncertain");
+    if (chooserClickTimedOut) {
+      await report("uncertain");
+      await recordTapnowEvent({ operation: "upload", route: "chooser", stage,
+        outcome: "recovered", reason: "timeout", elapsedMs: Date.now() - startedAt });
+    }
     await report("completed");
     stage = "set-files";
     await report("started");
@@ -97,8 +108,11 @@ async function uploadTapnowFiles(tab, {
       return await fail("Files were set, but upload completion was not verified from the original nodes.");
     }
     await report("completed");
+    if (deliveryTimedOut) await recordTapnowEvent({ operation: "upload", route: "chooser", stage: "set-files",
+      outcome: "recovered", reason: "timeout", elapsedMs: Date.now() - startedAt });
     return { ok: true, status: "uploaded", stage, filesMayBeSet, chooserClickTimedOut, deliveryTimedOut, evidence: checked.value.evidence };
   } catch (error) {
     return await fail(String(error?.message || error));
   }
 }
+export { uploadTapnowFiles };

@@ -34,9 +34,9 @@
 | --- | --- | --- |
 | 状态、项目及素材查询 | `tapnow_status`、`list_visual_projects`、`find_library_assets`、`find_library_folders` | 只读；项目列表不等于画布全部内容 |
 | 素材选择 | `show_library` | 需 Codex 支持 MCP Apps；面板不可用时用素材查询 |
-| 上传 | `upload_image` | 写入平台；核对支持的输入来源，不为上传方便公开本地素材 |
+| 上传 | `upload_image` | 写入平台；真实附件 `image_file` 或现成 HTTPS `image_url` 二选一，按[素材卡](cards/02-assets-navigation.md)检查宿主交接条件，不公开本地私有素材 |
 | 图片、视频、电商组图、配图 | `create_image`、`create_video`、`create_product_shots`、`create_deck_visuals` | 可能直接付费提交；核对型号、参数及输出数量 |
 | 尺寸转换、存库 | `resize_for_platform`、`resize_for_platform_apply`、`save_to_library` | 会写入平台，即使不收费也须在任务范围内 |
-| 结果查询 | `get_production_result` | 沿用提交返回的 `project_id` 和 `node_ids`，不启动生成 |
+| 结果查询与下载地址 | `get_production_result` | 沿用提交返回的 `project_id` 和 `node_ids`，done 后的媒体地址可用于下载；不启动生成，不自动保存到本地 |
 
 工具无法表达指定型号、参考角色或参数时，转浏览器配置；不能把要求写进 prompt 后声称已设置。MCP 项目链接可用于打开原画布；本地图片不被上传工具支持时，在原画布通过浏览器上传，不另建重复任务。生成后的查询与交付见 [浏览器工作流](browser-workflow.md#生成查询与网页验收)。

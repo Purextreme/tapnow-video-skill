@@ -1,5 +1,6 @@
 // Capability routing and timing. No generation tool is ever invoked here.
 import {compareCanvas} from './canvas-geometry.mjs';
+import {recordTapnowEvent} from './diagnostics.mjs';
 export function routePreparation(catalog, request) {
   const tools = catalog?.tools || catalog?.catalog?.tools || {};
   const toolName=request.kind==='image'?'create_image':'create_video';
@@ -52,7 +53,15 @@ export function classifyFailure({message = '', pageText = '', mutationMayBeInFli
 // Call this once from cua_repl after loading the controller and a validated request.
 // startMs may be captured before MCP preflight so tool/model hand-off time is included.
 export async function runPreparedFlow({controller, request, startMs = Date.now(), mcpMs = 0}) {
-  const browserStarted=Date.now(), before=await controller.readCanvas();
+  const browserStarted=Date.now();
+  let before;
+  try {before=await controller.readCanvas();}
+  catch(error) {
+    await recordTapnowEvent({operation:'prepare',route:'dom',stage:'canvas-read',outcome:'failed',
+      reason:classifyFailure({message:String(error?.message||error)}).kind,elapsedMs:Date.now()-startMs});
+    throw error;
+  }
+  let stage='configure';
   controller.lastDraft=request.draft||null;
   try {
     if(controller.dismissKnownOverlay)await controller.dismissKnownOverlay();
@@ -61,6 +70,7 @@ export async function runPreparedFlow({controller, request, startMs = Date.now()
     const action=actions[request.kind||'frames'];
     if(!action)throw Error('Unknown preparation kind');
     const result=await controller[action](request);
+    stage='audit';
     const after=await controller.readCanvas();
     const originalNodesMoved=before.nodes.filter(n=>{
       if (n.id===request.draft?.id) return false;
@@ -75,12 +85,16 @@ export async function runPreparedFlow({controller, request, startMs = Date.now()
     if (originalNodesMoved.length || removedEdges.length || !originalAudit.ok)
       throw Error('Original canvas changed: '+JSON.stringify({originalNodesMoved,removedEdges,originalAudit}));
     const completed=Date.now();
+    if(completed-startMs>20000)await recordTapnowEvent({operation:'prepare',route:'dom',stage,outcome:'slow',
+      reason:'budget',elapsedMs:completed-startMs});
     return {ok:true,kind:request.kind||'frames-new-draft',browserMs:completed-browserStarted,
       fullWallMs:completed-startMs,mcpMs,within20Seconds:completed-startMs<=20000,
       originalNodesMoved,originalAudit,nodeCountBefore:before.nodes.length,nodeCountAfter:after.nodes.length,
       edgeCountBefore:before.edges.length,edgeCountAfter:after.edges.length,result,generationCalled:false};
   } catch(error) {
     const completed=Date.now();
+    await recordTapnowEvent({operation:'prepare',route:'dom',stage,outcome:'failed',
+      reason:classifyFailure({message:String(error?.message||error)}).kind,elapsedMs:completed-startMs});
     return {ok:false,kind:request.kind||'frames-new-draft',browserMs:completed-browserStarted,
       fullWallMs:completed-startMs,mcpMs,error:String(error.message||error),draft:controller.lastDraft,generationCalled:false};
   }

@@ -1,7 +1,6 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const vm = require('node:vm');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 const script = process.argv[2] || path.join(__dirname, 'upload-files.js');
 const scenario = process.argv[3];
@@ -71,10 +70,9 @@ if (!scenario) {
     },
   };
   if (scenario === 'files-set-only') delete options.verifyUpload;
-  const context = vm.createContext({ setTimeout, clearTimeout, Promise });
-  vm.runInContext(fs.readFileSync(script, 'utf8'), context);
   (async () => {
-    const result = await context.uploadTapnowFiles(tab, options);
+    const { uploadTapnowFiles: upload } = await import(pathToFileURL(path.resolve(script)).href);
+    const result = await upload(tab, options);
     if (['success', 'reporter-error', 'late-set-ui-success', 'click-timeout-chooser-open'].includes(scenario)) {
       assert.equal(result.ok, true); assert.equal(result.status, 'uploaded');
       assert.ok(result.evidence); assert.equal(selectionCount, 1); assert.equal(verifyCount, 1);

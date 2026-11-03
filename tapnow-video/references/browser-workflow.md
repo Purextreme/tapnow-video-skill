@@ -5,7 +5,7 @@
 ## 操作路线
 
 1. 按 [技能入口](../SKILL.md#入口与资料) 选择浏览器，定位原画布与目标节点。未登录时等待用户登录成功后复用。
-2. 本地素材通过当前可见的 Add → Upload 入口上传，按[分阶段执行](#本地上传的分阶段执行)调用辅助函数；先监听 file chooser，再点击上传项并设置绝对路径。文件已交给网页不等于上传完成，超时先核查原节点，不立即重传。
+2. 上传按[素材卡](cards/02-assets-navigation.md)先检查 MCP 是否支持当前真实来源。本地素材通过当前可见的 Add → Upload 入口，按[分阶段执行](#本地上传的分阶段执行)调用辅助函数；先监听 file chooser，再点击上传项并设置绝对路径。文件已交给网页不等于上传完成，超时先核查原节点，不立即重传。
 3. 选中素材，通过 Add to Chat 或 Agent 附件／节点引用绑定输入；明确首帧、尾帧及其他参考用途，不能只写浏览器无法读取的本地路径。
 4. Agent 建任务前确认 Ask／手动确认模式。Ask、发送箭头和 Confirm 含义不同，按真实控件辨认；Agent 的语言模型选择器也不同于媒体生成型号选择器。
 5. 按下节配置节点；Agent 确认卡缺少指定型号时检查完整画布菜单。发送键按当前界面核对，不能凭习惯混用 Enter 与 Ctrl+Enter；发送后确认消息进入对话。
@@ -15,17 +15,32 @@
 
 ## 本地上传的分阶段执行
 
-先读当前浏览器的 `file-uploads` 文档，确认文件存在、格式和大小符合当前入口要求，再从真实 DOM 定位已展开菜单中的唯一可见上传项。使用 [`upload-files.js`](../scripts/upload-files.js) 的 `uploadTapnowFiles(tab, options)`；把函数声明加载到已有 `cua_repl`，复用原标签页。不另起浏览器驱动，不在 `evaluate` 中点击或派发文件事件。
+先读当前浏览器的 `file-uploads` 文档，确认文件存在、格式和大小符合当前入口要求，再从真实 DOM 定位已展开菜单中的唯一可见上传项。按[脚本运行约定](script-runtime.md#加载与复用)定义 `root` 后，直接导入 [`upload-files.js`](../scripts/upload-files.js) 的 `uploadTapnowFiles(tab, options)`，复用原 `cua_repl` 和标签页；不使用字符串 `eval`、另起浏览器驱动或在 `evaluate` 中派发文件事件。
 
 辅助函数只上传一次，不打开 Add 菜单、不绑定下游输入、不提交生成。调用方传入从当前页面确认的 `uploadControl` locator 和 `files` 绝对路径数组；多文件会核对 `isMultiple()`，不支持时停止，不擅自拆批。
+
+单张本地 PNG 在已就绪的画布上可复用 [`upload-canvas-image.mjs`](../scripts/upload-canvas-image.mjs)，减少调用方重复编写菜单和完成核验：
+
+```js
+const {uploadTapnowCanvasImage} = await import(root+'upload-canvas-image.mjs');
+const upload = await uploadTapnowCanvasImage(tab,{file:absolutePngPath});
+nodeRepl.write(upload);
+```
+
+封装只用当前可见上传菜单，已展开则复用，否则打开并等待可见；只交接一次。它保护原节点身份、位置与连线，按本次新增节点 ID、文件名、已加载预览和原片大小／SHA-256 判定完成，不依赖会消失或累计计数的上传提示。条件轮询在本地执行，不逐步截图。脚本的 10 MiB 上限是保守限制，不是平台限制或全范围测试保证；其他格式仍用通用函数。返回 `fullWallMs` 包含本地预检至原片读回，未包含后续排布／绑定；排布使用现有控制器，只移动本次新增节点并核验外部碰撞。失败先查原节点，不重放封装来恢复未知状态。
+
+`setFiles` 通过浏览器支持的文件选择器接口交接本地文件，省去在 Windows 窗口中找目录、输入路径和点击确认。它解决选文件环节，不绕过 TapNow 的校验、对象存储传输或完成确认；这些环节仍可能因网络／站点失败。选择器未返回时先处理原窗口／工具连接，不再打开第二个窗口。
 
 - **`chooser`**：先注册监听，再单次点击。监听一创建就捕获拒绝，点击失败也收尾监听，防止晚到错误导致工具内核重置。选择器默认等待 30 秒，点击回执等待 5 秒；点击仅回执超时时，同一次监听确实返回选择器才继续，报告 `uncertain` 并沿用该选择器，不再次点击。明确点击报错或未取得选择器则停止，核查菜单、遮挡和原生窗口，不直接延长到数分钟。
 - **`set-files`**：单次 `setFiles()`，默认等待回执 15 秒。回执超时不能证明文件未送达；有 `verifyUpload` 时进入原页面核验并报告 `uncertain`，不重新设置文件。明确报错则停止，保留原错误消息。
 - **`verify`**：由调用方的 `verifyUpload({tab, files, timeoutMs})` 按实际页面等待本次原节点就绪，核对文件身份、数量、缩略图、上传状态及可读／可播放的媒体。只读核验，不上传、刷新或生成。返回 `{complete: true, evidence: "简短页面证据"}` 才能判定完成；仍在上传、部分成功或证据不足时不能返回 true。默认核验 45 秒；优先控件状态等待，不固定 sleep，也不把长等待直接串接为一次超过 60 秒的阻塞调用，需要时使用工具的运行中续接机制并继续反馈。
 
+缩略图会使用不同 `variant_name`，加载后的像素尺寸可能小于原文件。以实际素材 ID／来源、传输完成状态和 `complete && naturalWidth > 0` 核验预览，不要求缩略图尺寸等于原图。确需验证原文件规格或内容时读原片，不能以预览尺寸判定上传失败。
+
 通过 `onProgress` 输出 `{stage, state, fileCount}`；state 为 `started`、`completed`、`uncertain` 或 `failed`。反馈函数保持简短，例如 `event => nodeRepl.write(event)`；不要在反馈中执行页面动作或长等待。反馈异常不会中断上传。
 
 ```js
+const {uploadTapnowFiles} = await import(root+'upload-files.js');
 // observedUploadControl 和 verifyCurrentUpload 须先按当前 DOM、节点身份定义。
 const upload = await uploadTapnowFiles(tab, {
   files: absolutePaths,
@@ -44,7 +59,7 @@ nodeRepl.write(upload);
 
 各阶段超时参数为 `chooserTimeoutMs`、`setFilesTimeoutMs`、`completionTimeoutMs`，单项范围 1–60000ms；仅在有页面证据时调整。超时限制等待判定，底层工具的阻塞、审批或链路延迟仍可能推迟实际返回，不能承诺每次调用的总耗时。需要独立恢复时只运行原 `verifyUpload`，不要重放上传函数。浏览器连接或明确权限错误按当前工具文档处理，不在成功上传时重复排查设置。
 
-维护脚本时可用 `node scripts/test-upload.cjs` 运行无网络回归测试；浏览器闭环应在隔离本地页面或已授权的测试画布验证。模拟用例不证明 TapNow 服务端网络质量。
+维护脚本时可用 `node --test scripts/test-upload.cjs scripts/test-canvas-upload.mjs` 运行无网络回归测试；浏览器闭环应在隔离本地页面或已授权的测试画布验证。模拟用例不证明 TapNow 服务端网络质量。
 
 ## 图片与视频节点的 DOM 配置
 
@@ -156,9 +171,9 @@ nodeRepl.write(await searchTapnowNodes(tab, { kind: "Image", query }));
 默认下载本次应交付的原片并在 Codex 展示；仅网页交付、禁止下载或只配置的任务跳过。
 
 1. **定位结果。** 沿用原任务标识，核对 done、标题、媒体类型及型号。已有工具返回的可用原生媒体／本地文件先复用；`media_url` 可能是 small／medium 变体，不能删改查询参数猜原片地址。
-2. **打开详情。** 从当前可见全屏入口进入，等待标题、规格和 Download 就绪；不假定双击图片打开详情。返回画布后确认详情已关闭，再操作下一节点。
-3. **优先官方下载。** 在核对身份的详情中，监听 download 事件再点击唯一、可见、可用的 Download。可加载 [`download-result.js`](../scripts/download-result.js) 调用 `downloadTapnowResult(tab)`；需要工具暴露相应 API，返回路径后仍须核验文件。
-4. **有条件使用媒体下载。** 仅在媒体本身已确认是所需原片时，对唯一 video／img 使用工具支持的 `downloadMedia`。图片详情显示原尺寸时，可见 img 仍可能是低清预览，此时走官方 Download；详情身份不等于其中每个媒体元素都是原片。
+2. **优先 MCP 地址直下。** `get_production_result` 返回本次 done 节点的 `media_urls` 后，复用已确认的原片 URL，通过本地 HTTP 下载或工具支持的媒体下载保存，不必先打开详情。MCP 提供地址，不等于已经写入本地文件；不用预览缩略图或猜测地址替代。保留 TLS 验证，不读取浏览器凭据给下载脚本；本地文件仍按第 5 项核验。
+3. **Download 按钮兜底。** 直接地址不可用或原片规格不符时，在已核对目标节点的工具条，或从当前全屏入口进入的详情中，监听 download 事件再点击唯一、可见、可用的 Download。从 [`download-result.js`](../scripts/download-result.js) 导入 `downloadTapnowResult`，调用时传入 `{downloadControl}`，限定至当前节点／详情；省略时要求全页唯一按钮。返回路径后仍须核验文件，状态不明不立即再次点击。详情返回画布后确认已关闭再操作下一节点。
+4. **有条件使用媒体元素下载。** 仅在媒体本身已确认是所需原片时，对唯一 video／img 使用工具支持的 `downloadMedia`。图片详情显示原尺寸时，可见 img 仍可能是低清预览，此时走官方 Download；详情身份不等于其中每个媒体元素都是原片。
 5. **核验文件。** 检查存在、非零、真实格式及完整解码；图像核对像素，视频核对尺寸、时长、帧率和音轨。使用可用解码器，本机无 ffprobe 时用 ffmpeg。保留原文件，复制不覆盖，必要时核对哈希；预览与原片分开命名。
 6. **展示与故障处理。** 使用 Codex 原生媒体／文件预览、绝对路径的 Markdown 图片语法或 `open_in_codex`，同时提供原画布与节点入口；`queued` 不证明已播放。传输超时先查对应文件和网页状态，确认未完成再重试下载；下载或展示失败明确说明，只恢复该环节，不重新生成。
 

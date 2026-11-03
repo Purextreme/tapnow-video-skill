@@ -127,8 +127,8 @@ export class TapnowPreparation {
   async setMentionPrompt(id, parts, references) {
     const mentioned=validatePromptParts(parts,references);
     const editor=this.node(id).locator('[data-testid="canvas-node-prompt-textarea"] [contenteditable="true"]');
-    const expected=new Map();
-    for(const source of references)expected.set(source.id,{...source,src:await this.sourceImage(source.id)});
+    const urls=await this.sourceImages(references.map(s=>s.id));
+    const expected=new Map(references.map((source,i)=>[source.id,{...source,src:urls[i]}]));
     await editor.press('Control+A'); await editor.press('Backspace');
     for(const part of parts) {
       if(typeof part==='string') {if(part)await editor.type(part);continue;}
@@ -322,13 +322,25 @@ export class TapnowPreparation {
     return {first:first.id,last:last.id};
   }
   async sourceImage(id) {
-    const images=this.node(id).locator('img[src^="http"]');
-    // After unstack/Undo the card can exist before its lazy preview is restored.
-    if (!await images.count()) await images.waitFor({state:'visible',timeoutMs:3000});
-    const urls=await images.evaluateAll(es=>es.map(e=>e.getAttribute('src')));
-    const assets=[...new Set(urls.map(src=>src.replace(/[?&]variant_name=[^&]*/,'')))];
-    if(assets.length!==1)throw Error('Source media identity ambiguous');
-    return assets[0];
+    return (await this.sourceImages([id]))[0];
+  }
+  async sourceImages(ids) {
+    for(const id of ids)this.node(id); // Validate IDs before using DOM selectors.
+    const deadline=Date.now()+3000;
+    while(Date.now()<deadline) {
+      const assets=await this.tab.playwright.evaluate(ids=>ids.map(id=>{
+        const node=document.querySelector('.react-flow__node[data-id="'+id+'"]');
+        const primary=[...node?.querySelectorAll('[data-testid="canvas-node-image-content"]')||[]];
+        const images=primary.length?primary:[...node?.querySelectorAll('img[src^="http"]')||[]];
+        return [...new Set(images.map(e=>e.getAttribute('src')?.replace(/[?&]variant_name=[^&]*/,''))
+          .filter(src=>/^https?:/.test(src)))];
+      }),ids);
+      if(assets.some(a=>a.length>1))throw Error('Source media identity ambiguous');
+      if(assets.every(a=>a.length===1))return assets.map(a=>a[0]);
+      // Lazy previews can lag behind cards after unstack/Undo. Never accept an
+      // empty identity or cache URLs across a later binding/mention operation.
+    }
+    throw Error('Source media not ready');
   }
   async chooseCanvasSource(id,{nativeInput=false}={}) {
     // Reference mode installs its own click surface. Wait for that public DOM
@@ -337,7 +349,6 @@ export class TapnowPreparation {
     await surface.waitFor({state:'visible',timeoutMs:3000});
     // Refresh the native tab's current screenshot mapping locally. This does not
     // send an image for model recognition and avoids stale mapping after pan/zoom.
-    if(nativeInput)await this.native.getScreenshot({emit:false});
     await this.observedClick(surface,{nativeInput});
   }
   async waitSourcePickerClosed() {
@@ -346,9 +357,11 @@ export class TapnowPreparation {
       if(Date.now()>deadline)throw Error('Reference edge exists but picker remains open; inspect before continuing');
     }
   }
-  async bindCanvasSource(draftId,sourceId) {
+  async bindCanvasSource(draftId,sourceId,{nativeInput=false}={}) {
     const edge=this.tab.playwright.locator('.react-flow__edge[aria-label="Edge from '+sourceId+' to '+draftId+'"]');
-    await this.chooseCanvasSource(sourceId);
+    // The Reference path has consumed semantic clicks inconsistently. It can
+    // request a fresh native mapping; other callers retain their existing route.
+    await this.chooseCanvasSource(sourceId,{nativeInput});
     const deadline=Date.now()+700;
     while(!await edge.count() && Date.now()<deadline)await this.readCanvas();
     if(!await edge.count()){
@@ -374,16 +387,13 @@ export class TapnowPreparation {
   async bindReferences(id, sources) {
     if (!sources.length || new Set(sources.map(s=>s.id)).size!==sources.length) throw Error('Invalid reference list');
     const key=src=>src?.replace(/[?&]variant_name=[^&]*/,'');
-    const expected=[];
-    for (const source of sources) {
-      expected.push(await this.sourceImage(source.id));
-    }
+    const expected=await this.sourceImages(sources.map(s=>s.id));
     const refs=this.node(id).locator('img[alt="referenceImage"]');
     let actual=await refs.evaluateAll(es=>es.map(e=>e.getAttribute('src')));
     if (actual.length>expected.length || actual.some((src,i)=>key(src)!==expected[i])) throw Error('Existing reference order differs; preserve it and inspect');
     for (let i=actual.length;i<sources.length;i++) {
       await this.activate(this.node(id).locator('button').filter({has:this.tab.playwright.locator('svg.lucide-plus')}));
-      await this.bindCanvasSource(id,sources[i].id);
+      await this.bindCanvasSource(id,sources[i].id,{nativeInput:true});
       await this.waitSourcePickerClosed();
       if (!(await this.readCanvas()).nodes.find(n=>n.id===id)?.selected) await this.selectNodes([id]);
       await refs.nth(i).waitFor({state:'visible',timeoutMs:3000});

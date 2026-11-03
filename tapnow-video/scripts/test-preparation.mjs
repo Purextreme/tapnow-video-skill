@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import {bounds,collisionPairs,planFreeSpace,overlaps,compareCanvas} from './canvas-geometry.mjs';
 import {routePreparation,PreparationTimer,classifyFailure,runPreparedFlow} from './preparation.mjs';
 import {TapnowPreparation} from './browser-actions.mjs';
@@ -112,6 +113,45 @@ test('a missing source edge with a closed picker never triggers another click',a
   c.chooseCanvasSource=async()=>{clicks++;};c.readCanvas=async()=>({nodes:[],edges:[]});
   await assert.rejects(c.bindCanvasSource('video-a','image-a'),/outcome unknown/);
   assert.equal(clicks,1);
+});
+
+test('source identities are batched, exclude editor icons, and are reread after replacement',async()=>{
+  let calls=0,asset='one';
+  const image=src=>({getAttribute:()=>src});
+  const document={querySelector:selector=>({querySelectorAll:marker=>{
+    const id=selector.match(/data-id="([^"]+)"/)[1];
+    const own=[image('https://files/uploads/'+id+'-'+asset+'?variant_name=thumbnail')];
+    return marker==='[data-testid="canvas-node-image-content"]'?own:[...own,image('https://files/model-icon.svg')];
+  }})};
+  const c=new TapnowPreparation({tab:{playwright:{getByTestId:()=>({}),evaluate:async(fn,ids)=>{
+    calls++;return JSON.parse(JSON.stringify(vm.runInNewContext('('+fn.toString()+')(ids)',{document,ids})));
+  }}}});
+  assert.deepEqual(await c.sourceImages(['image-a','image-b']),['https://files/uploads/image-a-one','https://files/uploads/image-b-one']);
+  assert.equal(calls,1);
+  asset='replacement';assert.equal(await c.sourceImage('image-a'),'https://files/uploads/image-a-replacement');
+  assert.equal(calls,2);
+  await assert.rejects(c.sourceImages(['image-a"]']),/Invalid node ID/);
+  assert.equal(calls,2);
+});
+
+test('a source batch waits for every preview and rejects ambiguous media',async(t)=>{
+  let now=0,calls=0,ambiguous=false;t.mock.method(Date,'now',()=>now+=100);
+  const c=new TapnowPreparation({tab:{playwright:{getByTestId:()=>({}),evaluate:async()=>{
+    calls++;return ambiguous?[['first','second']]:calls===1?[['first'],[]]:[['first'],['last']];
+  }}}});
+  assert.deepEqual(await c.sourceImages(['image-a','image-b']),['first','last']);
+  assert.equal(calls,2);
+  ambiguous=true;await assert.rejects(c.sourceImage('image-a'),/identity ambiguous/);
+  c.tab.playwright.evaluate=async()=>[[]];
+  await assert.rejects(c.sourceImage('image-a'),/not ready/);
+});
+
+test('an explicitly native picker consumes one observed click when its edge appears',async()=>{
+  const calls=[];
+  const c=new TapnowPreparation({tab:{playwright:{locator:()=>({count:async()=>1,waitFor:async()=>{}})}}});
+  c.chooseCanvasSource=async(id,options)=>{calls.push({id,...options});};
+  await c.bindCanvasSource('video-a','image-a',{nativeInput:true});
+  assert.deepEqual(calls,[{id:'image-a',nativeInput:true}]);
 });
 test('reference requests run the reference path and preserve the original canvas',async()=>{
   let referenceCalls=0;
